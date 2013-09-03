@@ -37,14 +37,15 @@ var mediaObjects = {};
  * @param statusCallback        The callback to be called when media status has changed.
  *                                  statusCallback(int statusCode) - OPTIONAL
  */
-var Media = function(src, successCallback, errorCallback, statusCallback) {
-    argscheck.checkArgs('SFFF', 'Media', arguments);
+var Media = function(src, successCallback, errorCallback, statusCallback, levelCallback) {
+    argscheck.checkArgs('SFFFF', 'Media', arguments);
     this.id = utils.createUUID();
     mediaObjects[this.id] = this;
     this.src = src;
     this.successCallback = successCallback;
     this.errorCallback = errorCallback;
     this.statusCallback = statusCallback;
+    this.levelCallback = levelCallback;
     this._duration = -1;
     this._position = -1;
     exec(null, this.errorCallback, "Media", "create", [this.id, this.src]);
@@ -54,6 +55,7 @@ var Media = function(src, successCallback, errorCallback, statusCallback) {
 Media.MEDIA_STATE = 1;
 Media.MEDIA_DURATION = 2;
 Media.MEDIA_POSITION = 3;
+Media.MEDIA_LEVEL = 4;
 Media.MEDIA_ERROR = 9;
 
 // Media states
@@ -62,6 +64,7 @@ Media.MEDIA_STARTING = 1;
 Media.MEDIA_RUNNING = 2;
 Media.MEDIA_PAUSED = 3;
 Media.MEDIA_STOPPED = 4;
+Media.MEDIA_INTERRUPTED = 5;
 Media.MEDIA_MSG = ["None", "Starting", "Running", "Paused", "Stopped"];
 
 // "static" function to return existing objs.
@@ -132,10 +135,24 @@ Media.prototype.startRecord = function() {
 };
 
 /**
+ * Pause recording audio file.
+ */
+Media.prototype.pauseRecord = function() {
+    exec(null, this.errorCallback, "Media", "pauseRecordingAudio", [this.id]);
+};
+
+/**
  * Stop recording audio file.
  */
 Media.prototype.stopRecord = function() {
     exec(null, this.errorCallback, "Media", "stopRecordingAudio", [this.id]);
+};
+
+/**
+ * Set Input Gain
+ */
+Media.setInputGain = function(gain) {
+    exec(null, this.errorCallback, "Media", "setInputGain", [gain]);
 };
 
 /**
@@ -160,7 +177,7 @@ Media.prototype.setVolume = function(volume) {
  * @param msgType       The 'type' of update this is
  * @param value         Use of value is determined by the msgType
  */
-Media.onStatus = function(id, msgType, value) {
+Media.onStatus = function(id, msgType, value, peakLevel) {
 
     var media = mediaObjects[id];
 
@@ -180,6 +197,9 @@ Media.onStatus = function(id, msgType, value) {
                 break;
             case Media.MEDIA_POSITION :
                 media._position = Number(value);
+                break;
+            case Media.MEDIA_LEVEL :
+                media.levelCallback && media.levelCallback(value, peakLevel);
                 break;
             default :
                 console.error && console.error("Unhandled Media.onStatus :: " + msgType);

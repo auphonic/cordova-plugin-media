@@ -20,11 +20,12 @@
 #import "CDVSound.h"
 #import <Cordova/NSArray+Comparisons.h>
 #import <Cordova/CDVJSON.h>
+#import <AudioToolbox/AudioToolbox.h>
 
 #define DOCUMENTS_SCHEME_PREFIX @"documents://"
 #define HTTP_SCHEME_PREFIX @"http://"
 #define HTTPS_SCHEME_PREFIX @"https://"
-#define RECORDING_WAV @"wav"
+#define RECORDING_WAV @"m4a"
 
 @implementation CDVSound
 
@@ -385,16 +386,7 @@
         if (playerError) {
             NSLog(@"Unable to download audio from: %@", [resourceURL absoluteString]);
         } else {
-            // bug in AVAudioPlayer when playing downloaded data in NSData - we have to download the file and play from disk
-            CFUUIDRef uuidRef = CFUUIDCreate(kCFAllocatorDefault);
-            CFStringRef uuidString = CFUUIDCreateString(kCFAllocatorDefault, uuidRef);
-            NSString* filePath = [NSString stringWithFormat:@"%@/%@", [NSTemporaryDirectory()stringByStandardizingPath], uuidString];
-            CFRelease(uuidString);
-            CFRelease(uuidRef);
-
-            [data writeToFile:filePath atomically:YES];
-            NSURL* fileURL = [NSURL fileURLWithPath:filePath];
-            audioFile.player = [[CDVAudioPlayer alloc] initWithContentsOfURL:fileURL error:&playerError];
+            audioFile.player = [[CDVAudioPlayer alloc] initWithData:data error:&playerError];
         }
     }
 
@@ -533,10 +525,6 @@
     if ((audioFile != nil) && (audioFile.resourceURL != nil)) {
         NSError* __autoreleasing error = nil;
 
-        if (audioFile.recorder != nil) {
-            [audioFile.recorder stop];
-            audioFile.recorder = nil;
-        }
         // get the audioSession and set the category to allow recording when device is locked or ring/silent switch engaged
         if ([self hasAudioSession]) {
             [self.avSession setCategory:AVAudioSessionCategoryRecord error:nil];
@@ -550,8 +538,25 @@
             }
         }
 
-        // create a new recorder for each start record
-        audioFile.recorder = [[CDVAudioRecorder alloc] initWithURL:audioFile.resourceURL settings:nil error:&error];
+        // reuse the recorder if possible and resume recording
+        if (audioFile.recorder == nil) {
+            UInt32 channels;
+            UInt32 size = sizeof(channels);
+            AudioSessionGetProperty(kAudioSessionProperty_CurrentHardwareInputNumberChannels, &size, &channels);
+
+            // Thank You Dear Sir
+            // http://stackoverflow.com/questions/11347760/avaudiorecorder-proper-mpeg4-aac-recording-settings
+            NSDictionary *settings = [NSDictionary dictionaryWithObjectsAndKeys:
+                                      [NSNumber numberWithInt:kAudioFormatMPEG4AAC], AVFormatIDKey,
+                                      [NSNumber numberWithFloat:44100.0], AVSampleRateKey,
+                                      [NSNumber numberWithInt:channels], AVNumberOfChannelsKey,
+                                      [NSNumber numberWithInt:AVAudioQualityMax], AVSampleRateConverterAudioQualityKey,
+                                      [NSNumber numberWithInt:160000], AVEncoderBitRateKey,
+                                      [NSNumber numberWithInt:16], AVEncoderBitDepthHintKey,
+                                      nil];
+
+            audioFile.recorder = [[CDVAudioRecorder alloc] initWithURL:audioFile.resourceURL settings:settings error:&error];
+        }
 
         bool recordingSuccess = NO;
         if (error == nil) {
@@ -559,6 +564,9 @@
             audioFile.recorder.mediaId = mediaId;
             recordingSuccess = [audioFile.recorder record];
             if (recordingSuccess) {
+                audioFile.recorder.meteringEnabled = YES;
+                levelTimer = [NSTimer scheduledTimerWithTimeInterval: 0.05 target: self selector: @selector(levelTimerCallback:) userInfo: mediaId repeats: YES];
+
                 NSLog(@"Started recording audio sample '%@'", audioFile.resourcePath);
                 jsString = [NSString stringWithFormat:@"%@(\"%@\",%d,%d);", @"cordova.require('org.apache.cordova.core.AudioHandler.Media').onStatus", mediaId, MEDIA_STATE, MEDIA_RUNNING];
             }
@@ -587,20 +595,56 @@
     return;
 }
 
+- (void)pauseRecordingAudio:(CDVInvokedUrlCommand*)command
+{
+    [levelTimer invalidate];
+    NSString* mediaId = [command.arguments objectAtIndex:0];
+    CDVAudioFile* audioFile = [[self soundCache] objectForKey:mediaId];
+
+    if ((audioFile != nil) && (audioFile.recorder != nil)) {
+        NSLog(@"Paused recording audio sample '%@'", audioFile.resourcePath);
+        [audioFile.recorder pause];
+        NSString* jsString = [NSString stringWithFormat:@"%@(\"%@\",%d,%d);", @"cordova.require('org.apache.cordova.core.AudioHandler.Media').onStatus", mediaId, MEDIA_STATE, MEDIA_PAUSED];
+        [self.commandDelegate evalJs:jsString];
+    }
+
+    if (self.avSession) {
+        [self.avSession setActive:NO error:nil];
+    }
+}
+
 - (void)stopRecordingAudio:(CDVInvokedUrlCommand*)command
 {
+    [levelTimer invalidate];
     NSString* mediaId = [command.arguments objectAtIndex:0];
 
     CDVAudioFile* audioFile = [[self soundCache] objectForKey:mediaId];
-    NSString* jsString = nil;
 
     if ((audioFile != nil) && (audioFile.recorder != nil)) {
         NSLog(@"Stopped recording audio sample '%@'", audioFile.resourcePath);
         [audioFile.recorder stop];
         // no callback - that will happen in audioRecorderDidFinishRecording
     }
-    // ignore if no media recording
-    if (jsString) {
+}
+
+- (void)setInputGain:(CDVInvokedUrlCommand*)command
+{
+    float gain = [[command.arguments objectAtIndex:0] floatValue];
+    if (gain >= 0 && gain <= 1.0 && self.avSession.isInputGainSettable) {
+        NSError* __autoreleasing gainError = nil;
+        [self.avSession setInputGain:gain error:&gainError];
+    }
+}
+
+- (void)levelTimerCallback:(NSTimer *)timer {
+    NSString* mediaId = [timer userInfo];
+    CDVAudioFile* audioFile = [[self soundCache] objectForKey:mediaId];
+
+    if ((audioFile != nil) && (audioFile.recorder != nil)) {
+        [audioFile.recorder updateMeters];
+        double averagePower = [audioFile.recorder averagePowerForChannel:0];
+        double peakPower = [audioFile.recorder peakPowerForChannel:0];
+        NSString* jsString = [NSString stringWithFormat:@"%@(\"%@\",%d,%f,%f);", @"cordova.require('org.apache.cordova.core.AudioHandler.Media').onStatus", mediaId, MEDIA_LEVEL, averagePower, peakPower];
         [self.commandDelegate evalJs:jsString];
     }
 }
@@ -624,6 +668,29 @@
     if (self.avSession) {
         [self.avSession setActive:NO error:nil];
     }
+    [self.commandDelegate evalJs:jsString];
+}
+
+- (void)audioRecorderBeginInterruption:(AVAudioRecorder *)recorder
+{
+    NSLog(@"Audio interruption");
+    CDVAudioRecorder* aRecorder = (CDVAudioRecorder*)recorder;
+    NSString* mediaId = aRecorder.mediaId;
+    NSString* jsString = [NSString stringWithFormat:@"%@(\"%@\",%d,%d);", @"cordova.require('org.apache.cordova.core.AudioHandler.Media').onStatus", mediaId, MEDIA_STATE, MEDIA_INTERRUPTED];
+    [self.commandDelegate evalJs:jsString];
+}
+
+- (void)audioRecorderEncodeErrorDidOccur:(AVAudioRecorder*)recorder error:(NSError*)error
+{
+    [recorder stop];
+    CDVAudioRecorder* aRecorder = (CDVAudioRecorder*)recorder;
+    NSString* mediaId = aRecorder.mediaId;
+
+    if (self.avSession) {
+        [self.avSession setActive:NO error:nil];
+    }
+
+    NSString* jsString = [NSString stringWithFormat:@"%@(\"%@\",%d,%@);", @"cordova.require('org.apache.cordova.core.AudioHandler.Media').onStatus", mediaId, MEDIA_ERROR, [self createMediaErrorWithCode:MEDIA_ERR_DECODE message:nil]];
     [self.commandDelegate evalJs:jsString];
 }
 
