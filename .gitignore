@@ -12,12 +12,7 @@ Thumbs.db
 *.swp
 *.user
 
-
-
-
-
-
-
-
-
- 
+libs/armeabi*
+ndk
+obj
+auphonic.path

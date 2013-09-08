@@ -12,11 +12,11 @@ id="org.apache.cordova.core.AudioHandler"
     <js-module src="www/MediaError.js" name="MediaError">
         <clobbers target="window.MediaError" />
     </js-module>
-    
+
     <js-module src="www/Media.js" name="Media">
         <clobbers target="window.Media" />
     </js-module>
-    
+
     <!-- android -->
     <platform name="android">
         <config-file target="res/xml/config.xml" parent="/*">
@@ -24,22 +24,24 @@ id="org.apache.cordova.core.AudioHandler"
                 <param name="android-package" value="org.apache.cordova.media.AudioHandler"/>
             </feature>
         </config-file>
-        
+
         <config-file target="AndroidManifest.xml" parent="/*">
             <uses-permission android:name="android.permission.RECORD_AUDIO" />
             <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
             <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
         </config-file>
-        
+
         <source-file src="src/android/AudioHandler.java" target-dir="src/org/apache/cordova/media" />
         <source-file src="src/android/AudioPlayer.java" target-dir="src/org/apache/cordova/media" />
+        <source-file src="src/android/SndfileEncoder.java" target-dir="src/org/apache/cordova/media" />
+        <source-file src="src/android/SndfileRecorder.java" target-dir="src/org/apache/cordova/media" />
      </platform>
-     
+
      <!-- ios -->
-     <platform name="ios">    
+     <platform name="ios">
          <config-file target="config.xml" parent="/*">
              <feature name="Media">
-                 <param name="ios-package" value="CDVSound" /> 
+                 <param name="ios-package" value="CDVSound" />
              </feature>
          </config-file>
          <header-file src="src/ios/CDVSound.h" />
@@ -95,6 +97,6 @@ id="org.apache.cordova.core.AudioHandler"
             <merges target="" />
         </js-module>
     </platform>
-    
-            
+
+
 </plugin>
